@@ -17,16 +17,17 @@ import glob
 import cv2
 
 # Set some parameters
-IMG_SHAPE = 256
-IMG_CHANNELS = 3
-BATCH_SIZE = 3
-SPLIT = 40
-EPOCHS = 50
-AUTO = tf.data.experimental.AUTOTUNE
+IMG_SHAPE = 512                 # Image size
+IMG_CHANNELS = 3                # Channels of the original image
+BATCH_SIZE = 3                  # Image to pass at once to the net, RAM usage 
+SPLIT = 30                      # Size in % of the Train/Val split
+EPOCHS = 60                     # Cicles for training
 
 ELEMENT =         'bottle'
 TRAIN_PATH =      './dataset/' + ELEMENT + '/test/*/*' 
 ANNOTATION_PATH = './dataset/' + ELEMENT + '/ground_truth/*/*' 
+TEST_PATH = './dataset/' + ELEMENT + '/test/*/*'
+AUTO = tf.data.experimental.AUTOTUNE
 
 input_img_paths = sorted(
     [
@@ -36,6 +37,14 @@ annotation_img_paths = sorted(
     [
         os.path.join(fname) for fname in glob.glob(ANNOTATION_PATH) if fname.endswith(".png")
     ])
+
+N_SPLIT = int(len(input_img_paths)*SPLIT/100)
+input_img_paths, annotation_img_paths = shuffle(input_img_paths, annotation_img_paths, random_state=42)
+input_img_paths_train, annotation_img_paths_train = input_img_paths[: -N_SPLIT], annotation_img_paths[: -N_SPLIT]
+input_img_paths_val, annotation_img_paths_val = input_img_paths[-N_SPLIT:], annotation_img_paths[-N_SPLIT:]
+
+trainloader = tf.data.Dataset.from_tensor_slices((input_img_paths_train, annotation_img_paths_train))
+valLoader = tf.data.Dataset.from_tensor_slices((input_img_paths_val, annotation_img_paths_val))
 
 # Data loader and augmentation
 def load_image(img_filepath, mask_filepath, rotate=0, Hflip=False, Vflip=False, brightness=0, zoom=0, contrast=0):
@@ -86,16 +95,10 @@ def load_image(img_filepath, mask_filepath, rotate=0, Hflip=False, Vflip=False, 
 
     return img, mask
 
-input_img_paths, annotation_img_paths = shuffle(input_img_paths, annotation_img_paths, random_state=42)
-input_img_paths_train, annotation_img_paths_train = input_img_paths[: -SPLIT], annotation_img_paths[: -SPLIT]
-input_img_paths_val, annotation_img_paths_val = input_img_paths[-SPLIT:], annotation_img_paths[-SPLIT:]
-
-trainloader = tf.data.Dataset.from_tensor_slices((input_img_paths_train, annotation_img_paths_train))
-valLoader = tf.data.Dataset.from_tensor_slices((input_img_paths_val, annotation_img_paths_val))
-
 trainloader = (
     trainloader
-    .map(lambda x, y: load_image(x, y), num_parallel_calls=AUTO)
+    .shuffle(len(input_img_paths))
+    .map(lambda x, y: load_image(x, y, rotate=10, Hflip=True, Vflip=True, brightness=0.1, contrast=0.1), num_parallel_calls=AUTO)
     .batch(BATCH_SIZE)
     .prefetch(AUTO))
 
@@ -180,7 +183,7 @@ def conv2d_block(input_tensor, n_filters, kernel_size = 3, batchnorm = True):
     x = Activation('relu')(x)
     
     return x
-def get_Unet_v2(input_img, n_filters = 16, dropout = 0.1, kernel_size = 3, batchnorm = True):
+def get_model_Unet_v2(input_img, n_filters = 16, dropout = 0.1, kernel_size = 3, batchnorm = True):
     """Function to define the UNET Model"""
 
     input = Input(input_img, name='img')
@@ -230,13 +233,17 @@ def get_Unet_v2(input_img, n_filters = 16, dropout = 0.1, kernel_size = 3, batch
 
 # Callbacks
 
-log_dir = "logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+str_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+log_dir = "logs/" + str_time
+img_dir = "logs/" + str_time + "/img"
+model_name = 'model-checkpoint_' + ELEMENT + '.h5'
+
 tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, write_images=True, write_graph=True)
 earlystopper = EarlyStopping(patience=10, verbose=2, min_delta=0.01, monitor="loss")
-checkpointer = ModelCheckpoint('model-checkpoint.h5', verbose=0, save_best_only=True)
+checkpointer = ModelCheckpoint(model_name, verbose=0, save_best_only=True)
 
 # Create model
-model = get_Unet_v2((IMG_SHAPE, IMG_SHAPE, 1), n_filters=16, dropout=0.2, kernel_size = 3, batchnorm=True)
+model = get_model_Unet_v2((IMG_SHAPE, IMG_SHAPE, 1), n_filters=32, dropout=0.2, kernel_size = 3, batchnorm=True)
 
 # Compile model 1:
 # Buena separacion con el fondo, reconocimiento completo de la zona
@@ -251,21 +258,20 @@ model.compile(optimizer='Adam', loss='binary_crossentropy', metrics=["accuracy"]
 fit = True
 if fit:
     results = model.fit(trainloader, epochs=EPOCHS, validation_data=valLoader, callbacks=[checkpointer, tensorboard_callback])
-model = load_model('model-checkpoint.h5')
+model = load_model(model_name)
 
 # Predict on train, val and test
 
-test_img, test_mask = next(iter(valLoader))
-pred_mask = model.predict(test_img)
+val_img, val_mask = next(iter(valLoader))
+pred_mask = model.predict(val_img)
 
 # Plot and print for evaluation
 
-test_img_ndarray = test_img.numpy()
-test_mask_ndarray = test_mask.numpy()
+val_img_ndarray = val_img.numpy()
+val_mask_ndarray = val_mask.numpy()
 
-img_dir = "logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "/img"
 image_writer = tf.summary.create_file_writer(img_dir)
 with image_writer.as_default():
-    tf.summary.image("Validation image", test_img[:4], step=0)
-    tf.summary.image("Validation mask", test_mask[:4], step=0)
+    tf.summary.image("Validation image", val_img[:4], step=0)
+    tf.summary.image("Validation mask", val_mask[:4], step=0)
     tf.summary.image("Predicted masks", pred_mask[:4], step=0)
