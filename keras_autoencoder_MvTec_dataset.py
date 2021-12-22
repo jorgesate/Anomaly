@@ -246,8 +246,7 @@ def build(inputShape, filters=(32, 64), latentDim=16):
     # reverse order
     for f in filters[::-1]:
         # apply a CONV_TRANSPOSE => RELU => BN operation
-        x = Conv2DTranspose(f, (3, 3), strides=2,
-            padding="same")(x)
+        x = Conv2DTranspose(f, (3, 3), strides=2, padding="same")(x)
         x = LeakyReLU(alpha=0.2)(x)
         x = BatchNormalization(axis=chanDim)(x)
     # apply a single CONV_TRANSPOSE layer used to recover the
