@@ -1,7 +1,6 @@
 import os
 import numpy as np
 from sklearn.utils import shuffle
-
 from keras.models import Model, load_model
 from keras.layers import Input, BatchNormalization, Activation, Dense, Dropout
 from keras.layers.core import Dropout
@@ -16,12 +15,13 @@ import glob
 
 import cv2
 
-# Set some parameters
-IMG_SHAPE = 512                 # Image size
+########### PARAMETROS ###########
+
+IMG_SHAPE = 512                 # Tamaño de la imagen
 IMG_CHANNELS = 3                # Channels of the original image
 BATCH_SIZE = 3                  # Image to pass at once to the net, RAM usage 
 SPLIT = 30                      # Size in % of the Train/Val split
-EPOCHS = 60                     # Cicles for training
+EPOCHS = 25                     # Ciclos de entrenamiento
 
 ELEMENT =         'bottle'
 TRAIN_PATH =      './dataset/' + ELEMENT + '/test/*/*' 
@@ -29,24 +29,31 @@ ANNOTATION_PATH = './dataset/' + ELEMENT + '/ground_truth/*/*'
 TEST_PATH = './dataset/' + ELEMENT + '/test/*/*'
 AUTO = tf.data.experimental.AUTOTUNE
 
+########### CARGA DE IMAGENES ###########
+
+# Direcciones de cada imagen
 input_img_paths = sorted(
     [
-        os.path.join(fname) for fname in glob.glob(TRAIN_PATH) if fname.endswith(".png")
+        os.path.join(fname) for fname in glob.glob(TRAIN_PATH) if (fname.endswith(".png") and "contamination" not in fname)
     ])
 annotation_img_paths = sorted(
     [
-        os.path.join(fname) for fname in glob.glob(ANNOTATION_PATH) if fname.endswith(".png")
+        os.path.join(fname) for fname in glob.glob(ANNOTATION_PATH) if (fname.endswith(".png") and "contamination" not in fname)
     ])
 
+# Separaccion entre validacion y train
 N_SPLIT = int(len(input_img_paths)*SPLIT/100)
 input_img_paths, annotation_img_paths = shuffle(input_img_paths, annotation_img_paths, random_state=42)
 input_img_paths_train, annotation_img_paths_train = input_img_paths[: -N_SPLIT], annotation_img_paths[: -N_SPLIT]
 input_img_paths_val, annotation_img_paths_val = input_img_paths[-N_SPLIT:], annotation_img_paths[-N_SPLIT:]
 
+print('\nSe usaran {} imagenes para el entrenamiento y {} para la validación\n'.format(len(input_img_paths_train), len(input_img_paths_val)))
+
+# Creacion del dataset
 trainloader = tf.data.Dataset.from_tensor_slices((input_img_paths_train, annotation_img_paths_train))
 valLoader = tf.data.Dataset.from_tensor_slices((input_img_paths_val, annotation_img_paths_val))
 
-# Data loader and augmentation
+# Funcion de lectura de imagenes y aumento
 def load_image(img_filepath, mask_filepath, rotate=0, Hflip=False, Vflip=False, brightness=0, zoom=0, contrast=0):
     # adapatation from https://stackoverflow.com/questions/65475057/keras-data-augmentation-pipeline-for-image-segmentation-dataset-image-and-mask
 
@@ -95,20 +102,20 @@ def load_image(img_filepath, mask_filepath, rotate=0, Hflip=False, Vflip=False, 
 
     return img, mask
 
+# Carga en memoria de las imagenes en bloques de tamaño BATCH_SIZE
 trainloader = (
     trainloader
     .shuffle(len(input_img_paths))
     .map(lambda x, y: load_image(x, y, rotate=10, Hflip=True, Vflip=True, brightness=0.1, contrast=0.1), num_parallel_calls=AUTO)
     .batch(BATCH_SIZE)
     .prefetch(AUTO))
-
 valLoader = (
     valLoader
     .map(lambda x, y: load_image(x, y), num_parallel_calls=AUTO)
     .batch(BATCH_SIZE)
     .prefetch(AUTO))
 
-# Build U-Net model
+########### MODELOS ###########
 
 def get_model_Unet_v1(kernel_size):
 
@@ -183,6 +190,7 @@ def conv2d_block(input_tensor, n_filters, kernel_size = 3, batchnorm = True):
     x = Activation('relu')(x)
     
     return x
+
 def get_model_Unet_v2(input_img, n_filters = 16, dropout = 0.1, kernel_size = 3, batchnorm = True):
     """Function to define the UNET Model"""
 
@@ -231,21 +239,23 @@ def get_model_Unet_v2(input_img, n_filters = 16, dropout = 0.1, kernel_size = 3,
     outputs = Conv2D(1, (1, 1), activation='sigmoid')(c9)
     return Model(input, outputs)
 
-# Callbacks
+########### ENTRENAMIENTO ###########
 
+# Parametros para callbacks
 str_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 log_dir = "logs/" + str_time
 img_dir = "logs/" + str_time + "/img"
 model_name = 'model-checkpoint_' + ELEMENT + '.h5'
 
+# Callbacks 
 tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, write_images=True, write_graph=True)
 earlystopper = EarlyStopping(patience=10, verbose=2, min_delta=0.01, monitor="loss")
 checkpointer = ModelCheckpoint(model_name, verbose=0, save_best_only=True)
 
-# Create model
-model = get_model_Unet_v2((IMG_SHAPE, IMG_SHAPE, 1), n_filters=32, dropout=0.2, kernel_size = 3, batchnorm=True)
+# Creacion del modelo
+model = get_model_Unet_v2((IMG_SHAPE, IMG_SHAPE, 1), n_filters=32, dropout=0.2, kernel_size = 5, batchnorm=True)
 
-# Compile model 1:
+# Compilacion del modelo
 # Buena separacion con el fondo, reconocimiento completo de la zona
 # Unet_v1, IMG_SHAPE = 512, IMG_CHANNELS = 1, BATCH_SIZE = 4, SPLIT = 15, EPOCHS = 50
 # optimizer='sgd', loss='binary_crossentropy', metrics=[tf.keras.metrics.BinaryCrossentropy()]
@@ -253,20 +263,17 @@ model.compile(optimizer='Adam', loss='binary_crossentropy', metrics=["accuracy"]
 
 # model.summary()
 
-# Fit model
-
+# Fit modelo
 fit = True
 if fit:
     results = model.fit(trainloader, epochs=EPOCHS, validation_data=valLoader, callbacks=[checkpointer, tensorboard_callback])
 model = load_model(model_name)
 
-# Predict on train, val and test
-
+# Predicciones
 val_img, val_mask = next(iter(valLoader))
 pred_mask = model.predict(val_img)
 
-# Plot and print for evaluation
-
+# Prints y evaluacion del resultado
 val_img_ndarray = val_img.numpy()
 val_mask_ndarray = val_mask.numpy()
 
