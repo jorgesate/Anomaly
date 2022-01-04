@@ -15,6 +15,8 @@ import tensorflow_addons as tfa
 import datetime
 import glob
 
+import matplotlib.pyplot as plt
+
 import cv2
 
 import skimage
@@ -24,7 +26,9 @@ IMG_SHAPE = 256                 # Image size
 IMG_CHANNELS = 3                # Channels of the original image
 BATCH_SIZE = 3                  # Image to pass at once to the net, RAM usage 
 SPLIT = 30                      # Size in % of the Train/Val split
-EPOCHS = 60                     # Cicles for training
+EPOCHS = 15                     # Cicles for training
+PATIENCE = 9
+MIN_DELTA = 0.1
 
 ELEMENT =           'bottle'
 TRAIN_PATH =        './dataset/' + ELEMENT + '/train/*/*' 
@@ -36,13 +40,21 @@ input_img_paths = sorted(
         os.path.join(fname) for fname in glob.glob(TRAIN_PATH) if fname.endswith(".png")
     ])
 
+test_img_paths = sorted(
+    [
+        os.path.join(fname) for fname in glob.glob(TEST_PATH) if fname.endswith(".png")
+    ])
+
 N_SPLIT = int(len(input_img_paths)*SPLIT/100)
 input_img_paths = shuffle(input_img_paths, random_state=42)
 input_img_paths_train = input_img_paths[: -N_SPLIT]
 input_img_paths_val = input_img_paths[-N_SPLIT:]
 
+print('\nSe usaran {} imagenes para el entrenamiento y {} para la validación\n'.format(len(input_img_paths_train), len(input_img_paths_val)))
+
 trainloader = tf.data.Dataset.from_tensor_slices((input_img_paths_train, input_img_paths_train))
 valLoader = tf.data.Dataset.from_tensor_slices((input_img_paths_val, input_img_paths_val))
+testLoader = tf.data.Dataset.from_tensor_slices((test_img_paths, test_img_paths))
 
 # Data loader and augmentation
 def load_image(img_filepath, y, rotate=0, Hflip=False, Vflip=False, brightness=0, zoom=0, contrast=0):
@@ -98,6 +110,12 @@ valLoader = (
     .batch(BATCH_SIZE)
     .prefetch(AUTO))
 
+testLoader = (
+    testLoader
+    .map(lambda x, y: load_image(x, y), num_parallel_calls=AUTO)
+    .batch(BATCH_SIZE)
+    .prefetch(AUTO))
+
 # Build U-Net model
 
 def build(inputShape, filters=(32, 64), latentDim=16):
@@ -146,12 +164,12 @@ def build(inputShape, filters=(32, 64), latentDim=16):
 # Callbacks
 
 str_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-log_dir = "logs/" + str_time
-img_dir = "logs/" + str_time + "/img"
-model_name = 'model-checkpoint_' + ELEMENT + '.h5'
+log_dir = "logs/" + str_time + "_AE"
+img_dir = "logs/" + str_time + "_AE" + "/img"
+model_name = 'mc_AE_' + ELEMENT + '.h5'
 
 tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, write_images=True, write_graph=True)
-earlystopper = EarlyStopping(patience=40, verbose=2, min_delta=0.005, monitor="loss")
+earlystopper = EarlyStopping(patience=PATIENCE, verbose=2, min_delta=MIN_DELTA, monitor="loss")
 checkpointer = ModelCheckpoint(model_name, verbose=0, save_best_only=True)
 
 # Create model
@@ -168,33 +186,52 @@ autoencoder.compile(optimizer='Adam', loss='mse', metrics=["accuracy"])
 
 fit = False
 if fit:
-    results = autoencoder.fit(trainloader, validation_data=(valLoader), epochs=EPOCHS, callbacks=[checkpointer, tensorboard_callback, earlystopper])
+    results = autoencoder.fit(trainloader, validation_data=valLoader, epochs=EPOCHS, callbacks=[checkpointer, earlystopper])
+
 model = load_model(model_name)
 
 # Predict on train, val and test
 
-val_img, val_mask = next(iter(valLoader))
-pred_mask = model.predict(val_img)
+print("\nEvaluating...\n")
+
+# val_img, _ = next(iter(valLoader))
+# pred_val_img = model.predict(val_img)
+
+test_img, _ = next(iter(testLoader))
+pred_test_img = model.predict(test_img)
 
 # Plot and print for evaluation
 
-pred_mask = pred_mask.astype("uint8")
-val_img_ndarray = val_img.numpy()
-val_img_ndarray = val_img_ndarray.astype("uint8")
-val_mask_ndarray = val_mask.numpy()
+# val_img_ndarray = val_img.numpy()
+# val_img_ndarray = val_img_ndarray.astype("uint8")
+
+test_img_ndarray = test_img.numpy()
+# test_img_ndarray = test_img_ndarray.astype("uint8")
+# pred_test_img = pred_test_img.astype("uint8")
 
 diff_array = []
+image_writer = tf.summary.create_file_writer(img_dir)
 
 # https://answers.opencv.org/question/213095/visualize-differences-between-two-images/
 
-for index in pred_mask:
-    (_, diff) = skimage.metrics.structural_similarity(val_img_ndarray[index], pred_mask[index])
-    diff = (diff * 255).astype("uint8")
-    diff_array.append(diff)
+i = 1
 
-image_writer = tf.summary.create_file_writer(img_dir)
-with image_writer.as_default():
-    tf.summary.image("Validation image", val_img[:4], step=0)
-    tf.summary.image("Validation mask", val_mask[:4], step=0)
-    tf.summary.image("Predicted masks", pred_mask[:4], step=0)
-    tf.summary.image("Diference", diff_array[:4], step=0)
+pti = pred_test_img[i] * 255
+pti = pti.astype("uint8")
+tin = test_img_ndarray[i] * 255
+tin = tin.astype("uint8")
+diff = cv2.subtract(pti, tin)
+
+f, axs = plt.subplots(1, 3)
+axs[0].imshow(pti, cmap='gray')
+axs[0].axis('off')
+axs[1].imshow(tin, cmap='gray')
+axs[1].axis('off')
+axs[2].imshow(diff, cmap='gray')
+axs[2].axis('off')
+
+plt.show()
+
+'''with image_writer.as_default():
+    tf.summary.image("Validation image", val_img[:BATCH_SIZE], step=0)
+    tf.summary.image("Predicted image", pred_val_img[:BATCH_SIZE], step=0)'''
