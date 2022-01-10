@@ -29,6 +29,7 @@ SPLIT = 30                      # Size in % of the Train/Val split
 EPOCHS = 15                     # Cicles for training
 PATIENCE = 9
 MIN_DELTA = 0.1
+TRAIN = False
 
 ELEMENT =           'bottle'
 TRAIN_PATH =        './dataset/' + ELEMENT + '/train/*/*' 
@@ -166,7 +167,7 @@ def build(inputShape, filters=(32, 64), latentDim=16):
 str_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 log_dir = "logs/" + str_time + "_AE"
 img_dir = "logs/" + str_time + "_AE" + "/img"
-model_name = 'mc_AE_' + ELEMENT + '.h5'
+model_name = 'saves/mc_AE_' + ELEMENT + '.h5'
 
 tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, write_images=True, write_graph=True)
 earlystopper = EarlyStopping(patience=PATIENCE, verbose=2, min_delta=MIN_DELTA, monitor="loss")
@@ -184,8 +185,7 @@ autoencoder.compile(optimizer='Adam', loss='mse', metrics=["accuracy"])
 
 # Fit model
 
-fit = False
-if fit:
+if TRAIN:
     results = autoencoder.fit(trainloader, validation_data=valLoader, epochs=EPOCHS, callbacks=[checkpointer, earlystopper])
 
 model = load_model(model_name)
@@ -210,27 +210,29 @@ test_img_ndarray = test_img.numpy()
 # pred_test_img = pred_test_img.astype("uint8")
 
 diff_array = []
-image_writer = tf.summary.create_file_writer(img_dir)
 
-# https://answers.opencv.org/question/213095/visualize-differences-between-two-images/
+f, axs = plt.subplots(2, 2)
 
-i = 1
+for i in range(BATCH_SIZE):
 
-pti = pred_test_img[i] * 255
-pti = pti.astype("uint8")
-tin = test_img_ndarray[i] * 255
-tin = tin.astype("uint8")
-diff = cv2.subtract(pti, tin)
+    pti = pred_test_img[i] * 255
+    pti = pti.astype("uint8")
+    tin = test_img_ndarray[i] * 255
+    tin = tin.astype("uint8")
+    diff = cv2.absdiff(pti, tin)
 
-f, axs = plt.subplots(1, 3)
-axs[0].imshow(pti, cmap='gray')
-axs[0].axis('off')
-axs[1].imshow(tin, cmap='gray')
-axs[1].axis('off')
-axs[2].imshow(diff, cmap='gray')
-axs[2].axis('off')
+    axs[0, 0].imshow(pti, cmap='gray')
+    axs[0, 0].axis('off')
+    axs[0, 1].imshow(tin, cmap='gray')
+    axs[0, 1].axis('off')
+    axs[1, 0].imshow(diff, cmap='gray')
+    axs[1, 0].axis('off')
+    axs[1, 1].imshow(diff, cmap='gray')
+    axs[1, 1].axis('off')
 
-plt.show()
+    plt.waitforbuttonpress(2 )
+
+plt.close()
 
 '''with image_writer.as_default():
     tf.summary.image("Validation image", val_img[:BATCH_SIZE], step=0)
