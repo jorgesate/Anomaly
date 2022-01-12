@@ -2,6 +2,7 @@ import os
 import numpy as np
 from sklearn.utils import shuffle
 from keras.models import Model, load_model
+from keras.metrics import BinaryCrossentropy, MeanIoU, SparseCategoricalCrossentropy
 from keras.layers import Input, BatchNormalization, Activation, Dense, Dropout
 from keras.layers.core import Dropout
 from keras.layers.convolutional import Conv2D, Conv2DTranspose
@@ -13,15 +14,20 @@ import tensorflow_addons as tfa
 import datetime
 import glob
 
+import matplotlib.pyplot as plt
+
 import cv2
 
 ########### PARAMETROS ###########
 
-IMG_SHAPE = 512                 # Tamaño de la imagen
+IMG_SHAPE = 256                 # Tamaño de la imagen
 IMG_CHANNELS = 3                # Channels of the original image
 BATCH_SIZE = 3                  # Image to pass at once to the net, RAM usage 
-SPLIT = 30                      # Size in % of the Train/Val split
-EPOCHS = 25                     # Ciclos de entrenamiento
+SPLIT = 30                      # Tamaño en % del agupamiento validacion / entrenamiento
+EPOCHS = 250                     # Ciclos de entrenamiento
+PATIENCE = 200                   # EarlySttoper min Epochs
+MIN_DELTA = 0.05                 # EarlySttoper min advance 
+TRAIN = True                    # Train Yes / No
 
 ELEMENT =         'bottle'
 TRAIN_PATH =      './dataset/' + ELEMENT + '/test/*/*' 
@@ -34,11 +40,11 @@ AUTO = tf.data.experimental.AUTOTUNE
 # Direcciones de cada imagen
 input_img_paths = sorted(
     [
-        os.path.join(fname) for fname in glob.glob(TRAIN_PATH) if (fname.endswith(".png") and "contamination" not in fname)
+        os.path.join(fname) for fname in glob.glob(TRAIN_PATH) if (fname.endswith(".png") and not "contamination" in fname)
     ])
 annotation_img_paths = sorted(
     [
-        os.path.join(fname) for fname in glob.glob(ANNOTATION_PATH) if (fname.endswith(".png") and "contamination" not in fname)
+        os.path.join(fname) for fname in glob.glob(ANNOTATION_PATH) if (fname.endswith(".png") and not "contamination" in fname)
     ])
 
 # Separaccion entre validacion y train
@@ -46,7 +52,6 @@ N_SPLIT = int(len(input_img_paths)*SPLIT/100)
 input_img_paths, annotation_img_paths = shuffle(input_img_paths, annotation_img_paths, random_state=42)
 input_img_paths_train, annotation_img_paths_train = input_img_paths[: -N_SPLIT], annotation_img_paths[: -N_SPLIT]
 input_img_paths_val, annotation_img_paths_val = input_img_paths[-N_SPLIT:], annotation_img_paths[-N_SPLIT:]
-
 print('\nSe usaran {} imagenes para el entrenamiento y {} para la validación\n'.format(len(input_img_paths_train), len(input_img_paths_val)))
 
 # Creacion del dataset
@@ -69,7 +74,6 @@ def load_image(img_filepath, mask_filepath, rotate=0, Hflip=False, Vflip=False, 
     
     # zoom in a bit
     if zoom != 0 and (tf.random.uniform(()) > 0.5):
-
         # use original image to preserve high resolution
         img = tf.image.central_crop(img, zoom)
         mask = tf.image.central_crop(mask, zoom)
@@ -106,7 +110,7 @@ def load_image(img_filepath, mask_filepath, rotate=0, Hflip=False, Vflip=False, 
 trainloader = (
     trainloader
     .shuffle(len(input_img_paths))
-    .map(lambda x, y: load_image(x, y, rotate=10, Hflip=True, Vflip=True, brightness=0.1, contrast=0.1), num_parallel_calls=AUTO)
+    .map(lambda x, y: load_image(x, y, Hflip=True, Vflip=True, brightness=0.1, contrast=0.1), num_parallel_calls=AUTO)
     .batch(BATCH_SIZE)
     .prefetch(AUTO))
 valLoader = (
@@ -117,11 +121,11 @@ valLoader = (
 
 ########### MODELOS ###########
 
-def get_model_Unet_v1(kernel_size):
+def get_model_Unet_v1(kernel_size = 3):
 
     kernel_size=kernel_size
 
-    inputs = Input((IMG_SHAPE, IMG_SHAPE, IMG_CHANNELS))
+    inputs = Input((IMG_SHAPE, IMG_SHAPE, 1))
 
     c1 = Conv2D(16, kernel_size, activation='relu', kernel_initializer='he_normal', padding='same') (inputs)
     c1 = Dropout(0.1) (c1)
@@ -191,7 +195,7 @@ def conv2d_block(input_tensor, n_filters, kernel_size = 3, batchnorm = True):
     
     return x
 
-def get_model_Unet_v2(input_img, n_filters = 16, dropout = 0.1, kernel_size = 3, batchnorm = True):
+def get_model_Unet_v2(input_img, n_filters = 16, dropout = 0.2, kernel_size = 3, batchnorm = True):
     """Function to define the UNET Model"""
 
     input = Input(input_img, name='img')
@@ -245,40 +249,62 @@ def get_model_Unet_v2(input_img, n_filters = 16, dropout = 0.1, kernel_size = 3,
 str_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 log_dir = "logs/" + str_time
 img_dir = "logs/" + str_time + "/img"
-model_name = 'model-checkpoint_' + ELEMENT + '.h5'
+model_name = 'saves/mc_Unet_' + ELEMENT + '.h5'
 
 # Callbacks 
 tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, write_images=True, write_graph=True)
-earlystopper = EarlyStopping(patience=10, verbose=2, min_delta=0.01, monitor="loss")
+earlystopper = EarlyStopping(patience=PATIENCE, verbose=2, min_delta=MIN_DELTA, monitor="loss")
 checkpointer = ModelCheckpoint(model_name, verbose=0, save_best_only=True)
 
 # Creacion del modelo
-model = get_model_Unet_v2((IMG_SHAPE, IMG_SHAPE, 1), n_filters=32, dropout=0.2, kernel_size = 5, batchnorm=True)
+# model = get_model_Unet_v2((IMG_SHAPE, IMG_SHAPE, 1), n_filters=16, dropout=0.2, kernel_size = 3, batchnorm=True)
+model = get_model_Unet_v1()
 
 # Compilacion del modelo
-# Buena separacion con el fondo, reconocimiento completo de la zona
-# Unet_v1, IMG_SHAPE = 512, IMG_CHANNELS = 1, BATCH_SIZE = 4, SPLIT = 15, EPOCHS = 50
-# optimizer='sgd', loss='binary_crossentropy', metrics=[tf.keras.metrics.BinaryCrossentropy()]
-model.compile(optimizer='Adam', loss='binary_crossentropy', metrics=["accuracy"])
-
+model.compile(optimizer='Adam', loss="binary_crossentropy", metrics=["accuracy"])
 # model.summary()
 
 # Fit modelo
-fit = True
-if fit:
-    results = model.fit(trainloader, epochs=EPOCHS, validation_data=valLoader, callbacks=[checkpointer, tensorboard_callback])
+if TRAIN:
+    results = model.fit(trainloader, epochs=EPOCHS, validation_data=valLoader, callbacks=[earlystopper, checkpointer])
 model = load_model(model_name)
 
 # Predicciones
 val_img, val_mask = next(iter(valLoader))
 pred_mask = model.predict(val_img)
 
-# Prints y evaluacion del resultado
 val_img_ndarray = val_img.numpy()
 val_mask_ndarray = val_mask.numpy()
 
-image_writer = tf.summary.create_file_writer(img_dir)
-with image_writer.as_default():
-    tf.summary.image("Validation image", val_img[:4], step=0)
-    tf.summary.image("Validation mask", val_mask[:4], step=0)
-    tf.summary.image("Predicted masks", pred_mask[:4], step=0)
+# Plot and print for evaluation
+
+f, axs = plt.subplots(2, 2)
+plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=0, hspace=0)
+for i in range(BATCH_SIZE):
+
+    validation_img = val_img_ndarray[i]
+    # validation_img = validation_img.astype("uint8")
+    # validation_img = cv2.GaussianBlur(validation_img, (7, 7), 0)
+
+    validation_mask = val_mask_ndarray[i]
+    # validation_mask = validation_mask.astype("uint8")
+
+    prediction_img = pred_mask[i]
+    # prediction_img = prediction_img.astype("uint8")
+    
+    # diff = cv2.absdiff(prediction_img, validation_mask)
+    # blur = cv2.GaussianBlur(prediction_img, (7, 7), 0)
+    # thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 61, 4)
+
+    axs[0, 0].imshow(validation_img, cmap='gray')
+    axs[0, 0].axis('off')
+    axs[0, 1].imshow(validation_mask, cmap='gray')
+    axs[0, 1].axis('off')
+    axs[1, 0].imshow(prediction_img, cmap='gray')
+    axs[1, 0].axis('off')
+    axs[1, 1].imshow(prediction_img, cmap='gray')
+    axs[1, 1].axis('off')
+
+    plt.waitforbuttonpress()
+
+plt.close()

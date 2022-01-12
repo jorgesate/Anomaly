@@ -22,14 +22,14 @@ import cv2
 import skimage
 
 # Set some parameters
-IMG_SHAPE = 256                 # Image size
+IMG_SHAPE = 512                 # Image size
 IMG_CHANNELS = 3                # Channels of the original image
 BATCH_SIZE = 3                  # Image to pass at once to the net, RAM usage 
 SPLIT = 30                      # Size in % of the Train/Val split
-EPOCHS = 15                     # Cicles for training
-PATIENCE = 9
-MIN_DELTA = 0.1
-TRAIN = False
+EPOCHS = 20                     # Cicles for training
+PATIENCE = 15                   # EarlySttoper min Epochs
+MIN_DELTA = 0.1                 # EarlySttoper min advance 
+TRAIN = False                    # Train Yes / No
 
 ELEMENT =           'bottle'
 TRAIN_PATH =        './dataset/' + ELEMENT + '/train/*/*' 
@@ -122,7 +122,6 @@ testLoader = (
 def build(inputShape, filters=(32, 64), latentDim=16):
     # initialize the input shape to be "channels last" along with
     # the channels dimension itself
-    # channels dimension itself
     chanDim = -1
     # define the input to the encoder
     inputs = Input(shape=inputShape)
@@ -174,13 +173,12 @@ earlystopper = EarlyStopping(patience=PATIENCE, verbose=2, min_delta=MIN_DELTA, 
 checkpointer = ModelCheckpoint(model_name, verbose=0, save_best_only=True)
 
 # Create model
-# model = get_model_Unet_v1((IMG_SHAPE, IMG_SHAPE, 1), n_filters=32, dropout=0.2, kernel_size = 3, batchnorm=True)
 
-(encoder, decoder, autoencoder) = build((IMG_SHAPE, IMG_SHAPE, 1))
+(encoder, decoder, autoencoder) = build((IMG_SHAPE, IMG_SHAPE, 1), filters=(32, 64), latentDim=4)
 
-# Compile model 1:
+# Compile model 1
+
 autoencoder.compile(optimizer='Adam', loss='mse', metrics=["accuracy"])
-
 # model.summary()
 
 # Fit model
@@ -194,46 +192,41 @@ model = load_model(model_name)
 
 print("\nEvaluating...\n")
 
-# val_img, _ = next(iter(valLoader))
-# pred_val_img = model.predict(val_img)
-
 test_img, _ = next(iter(testLoader))
 pred_test_img = model.predict(test_img)
 
 # Plot and print for evaluation
 
-# val_img_ndarray = val_img.numpy()
-# val_img_ndarray = val_img_ndarray.astype("uint8")
-
 test_img_ndarray = test_img.numpy()
-# test_img_ndarray = test_img_ndarray.astype("uint8")
-# pred_test_img = pred_test_img.astype("uint8")
 
 diff_array = []
 
 f, axs = plt.subplots(2, 2)
-
+plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=0, hspace=0)
 for i in range(BATCH_SIZE):
 
     pti = pred_test_img[i] * 255
     pti = pti.astype("uint8")
     tin = test_img_ndarray[i] * 255
     tin = tin.astype("uint8")
+    tin = cv2.GaussianBlur(tin, (7, 7), 0)
     diff = cv2.absdiff(pti, tin)
+    blur = cv2.GaussianBlur(diff, (7, 7), 0)
+    thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 61, 4)
 
     axs[0, 0].imshow(pti, cmap='gray')
     axs[0, 0].axis('off')
     axs[0, 1].imshow(tin, cmap='gray')
     axs[0, 1].axis('off')
-    axs[1, 0].imshow(diff, cmap='gray')
+    axs[1, 0].imshow(blur, cmap='gray')
     axs[1, 0].axis('off')
-    axs[1, 1].imshow(diff, cmap='gray')
+    axs[1, 1].imshow(thresh, cmap='gray')
     axs[1, 1].axis('off')
 
-    plt.waitforbuttonpress(2 )
+    plt.waitforbuttonpress()
 
 plt.close()
 
-'''with image_writer.as_default():
-    tf.summary.image("Validation image", val_img[:BATCH_SIZE], step=0)
-    tf.summary.image("Predicted image", pred_val_img[:BATCH_SIZE], step=0)'''
+# with image_writer.as_default():
+#     tf.summary.image("Validation image", val_img[:BATCH_SIZE], step=0)
+#     tf.summary.image("Predicted image", pred_val_img[:BATCH_SIZE], step=0)
