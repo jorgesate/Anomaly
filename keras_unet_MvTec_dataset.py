@@ -22,17 +22,17 @@ import cv2
 
 IMG_SHAPE = 256                 # Tamaño de la imagen
 IMG_CHANNELS = 3                # Channels of the original image
-BATCH_SIZE = 3                  # Image to pass at once to the net, RAM usage 
-SPLIT = 30                      # Tamaño en % del agupamiento validacion / entrenamiento
-EPOCHS = 250                     # Ciclos de entrenamiento
-PATIENCE = 200                   # EarlySttoper min Epochs
-MIN_DELTA = 0.05                 # EarlySttoper min advance 
-TRAIN = True                    # Train Yes / No
+BATCH_SIZE = 16                  # Image to pass at once to the net, RAM usage 
+SPLIT = 50                      # Tamaño en % del agupamiento validacion / entrenamiento
+EPOCHS = 350                     # Ciclos de entrenamiento
+PATIENCE = 350                   # EarlySttoper min Epochs
+MIN_DELTA = 0.0002                 # EarlySttoper min advance 
+TRAIN = False                    # Train Yes / No
 
-ELEMENT =         'bottle'
+ELEMENT =         'pill'
 TRAIN_PATH =      './dataset/' + ELEMENT + '/test/*/*' 
 ANNOTATION_PATH = './dataset/' + ELEMENT + '/ground_truth/*/*' 
-TEST_PATH = './dataset/' + ELEMENT + '/test/*/*'
+TEST_PATH = './dataset/' + ELEMENT + '/train/*/*'
 AUTO = tf.data.experimental.AUTOTUNE
 
 ########### CARGA DE IMAGENES ###########
@@ -40,11 +40,15 @@ AUTO = tf.data.experimental.AUTOTUNE
 # Direcciones de cada imagen
 input_img_paths = sorted(
     [
-        os.path.join(fname) for fname in glob.glob(TRAIN_PATH) if (fname.endswith(".png") and not "contamination" in fname)
+        os.path.join(fname) for fname in glob.glob(TRAIN_PATH) if (fname.endswith(".png"))
     ])
 annotation_img_paths = sorted(
     [
-        os.path.join(fname) for fname in glob.glob(ANNOTATION_PATH) if (fname.endswith(".png") and not "contamination" in fname)
+        os.path.join(fname) for fname in glob.glob(ANNOTATION_PATH) if (fname.endswith(".png"))
+    ])
+test_img_paths = sorted(
+    [
+        os.path.join(fname) for fname in glob.glob(TEST_PATH) if (fname.endswith(".png"))
     ])
 
 # Separaccion entre validacion y train
@@ -57,6 +61,7 @@ print('\nSe usaran {} imagenes para el entrenamiento y {} para la validación\n'
 # Creacion del dataset
 trainloader = tf.data.Dataset.from_tensor_slices((input_img_paths_train, annotation_img_paths_train))
 valLoader = tf.data.Dataset.from_tensor_slices((input_img_paths_val, annotation_img_paths_val))
+testLoader = tf.data.Dataset.from_tensor_slices((test_img_paths, test_img_paths))
 
 # Funcion de lectura de imagenes y aumento
 def load_image(img_filepath, mask_filepath, rotate=0, Hflip=False, Vflip=False, brightness=0, zoom=0, contrast=0):
@@ -115,6 +120,11 @@ trainloader = (
     .prefetch(AUTO))
 valLoader = (
     valLoader
+    .map(lambda x, y: load_image(x, y), num_parallel_calls=AUTO)
+    .batch(BATCH_SIZE)
+    .prefetch(AUTO))
+testLoader = (
+    testLoader
     .map(lambda x, y: load_image(x, y), num_parallel_calls=AUTO)
     .batch(BATCH_SIZE)
     .prefetch(AUTO))
@@ -195,7 +205,7 @@ def conv2d_block(input_tensor, n_filters, kernel_size = 3, batchnorm = True):
     
     return x
 
-def get_model_Unet_v2(input_img, n_filters = 16, dropout = 0.2, kernel_size = 3, batchnorm = True):
+def get_model_Unet_v2(input_img=(IMG_SHAPE, IMG_SHAPE, 1), n_filters=16, dropout=0.2, kernel_size=3, batchnorm=True):
     """Function to define the UNET Model"""
 
     input = Input(input_img, name='img')
@@ -258,7 +268,7 @@ checkpointer = ModelCheckpoint(model_name, verbose=0, save_best_only=True)
 
 # Creacion del modelo
 # model = get_model_Unet_v2((IMG_SHAPE, IMG_SHAPE, 1), n_filters=16, dropout=0.2, kernel_size = 3, batchnorm=True)
-model = get_model_Unet_v1()
+model = get_model_Unet_v2(n_filters=32)
 
 # Compilacion del modelo
 model.compile(optimizer='Adam', loss="binary_crossentropy", metrics=["accuracy"])
@@ -270,6 +280,7 @@ if TRAIN:
 model = load_model(model_name)
 
 # Predicciones
+
 val_img, val_mask = next(iter(valLoader))
 pred_mask = model.predict(val_img)
 
@@ -282,19 +293,20 @@ f, axs = plt.subplots(2, 2)
 plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=0, hspace=0)
 for i in range(BATCH_SIZE):
 
-    validation_img = val_img_ndarray[i]
-    # validation_img = validation_img.astype("uint8")
+    validation_img = val_img_ndarray[i] * 255
+    validation_img = validation_img.astype("uint8")
+    validation_img = cv2.cvtColor(validation_img, cv2.COLOR_GRAY2RGB)
     # validation_img = cv2.GaussianBlur(validation_img, (7, 7), 0)
 
-    validation_mask = val_mask_ndarray[i]
-    # validation_mask = validation_mask.astype("uint8")
+    validation_mask = val_mask_ndarray[i] * 255
+    validation_mask = validation_mask.astype("uint8")
 
-    prediction_img = pred_mask[i]
-    # prediction_img = prediction_img.astype("uint8")
-    
-    # diff = cv2.absdiff(prediction_img, validation_mask)
-    # blur = cv2.GaussianBlur(prediction_img, (7, 7), 0)
-    # thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 61, 4)
+    prediction_img = pred_mask[i] * 255
+    prediction_img = prediction_img.astype("uint8")
+
+    blank = np.zeros([IMG_SHAPE, IMG_SHAPE, 1]).astype("uint8")
+    merge = cv2.merge([prediction_img, blank, blank])
+    blend = cv2.addWeighted(merge, 0.3, validation_img, 0.7, 0.0)
 
     axs[0, 0].imshow(validation_img, cmap='gray')
     axs[0, 0].axis('off')
@@ -302,9 +314,31 @@ for i in range(BATCH_SIZE):
     axs[0, 1].axis('off')
     axs[1, 0].imshow(prediction_img, cmap='gray')
     axs[1, 0].axis('off')
-    axs[1, 1].imshow(prediction_img, cmap='gray')
+    axs[1, 1].imshow(blend)
     axs[1, 1].axis('off')
 
-    plt.waitforbuttonpress()
+    plt.waitforbuttonpress(1)
+
+plt.close()
+
+test_img, _ = next(iter(testLoader))
+pred_mask_test = model.predict(test_img)
+f, axs = plt.subplots(2)
+plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=0, hspace=0)
+
+test_img_ndarray = test_img.numpy()
+
+for i in range(BATCH_SIZE):
+
+    validation_img_test = test_img_ndarray[i]
+
+    prediction_mask_test = pred_mask_test[i]
+
+    axs[0].imshow(validation_img_test, cmap='gray')
+    axs[0].axis('off')
+    axs[1].imshow(prediction_mask_test, cmap='gray')
+    axs[1].axis('off')
+
+    plt.waitforbuttonpress(1)
 
 plt.close()
