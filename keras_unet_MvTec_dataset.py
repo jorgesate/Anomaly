@@ -13,6 +13,7 @@ import tensorflow as tf
 import tensorflow_addons as tfa
 import datetime
 import glob
+import time
 
 import matplotlib.pyplot as plt
 
@@ -22,7 +23,7 @@ import cv2
 
 IMG_SHAPE = 256                 # Tamaño de la imagen
 IMG_CHANNELS = 3                # Channels of the original image
-BATCH_SIZE = 16                  # Image to pass at once to the net, RAM usage 
+BATCH_SIZE = 3                  # Image to pass at once to the net, RAM usage 
 SPLIT = 50                      # Tamaño en % del agupamiento validacion / entrenamiento
 EPOCHS = 350                     # Ciclos de entrenamiento
 PATIENCE = 350                   # EarlySttoper min Epochs
@@ -280,9 +281,12 @@ if TRAIN:
 model = load_model(model_name)
 
 # Predicciones
+start_time = time.time()
 
 val_img, val_mask = next(iter(valLoader))
 pred_mask = model.predict(val_img)
+
+exec_time = (time.time() - start_time) * 1000/BATCH_SIZE
 
 val_img_ndarray = val_img.numpy()
 val_mask_ndarray = val_mask.numpy()
@@ -296,10 +300,12 @@ for i in range(BATCH_SIZE):
     validation_img = val_img_ndarray[i] * 255
     validation_img = validation_img.astype("uint8")
     validation_img = cv2.cvtColor(validation_img, cv2.COLOR_GRAY2RGB)
+    text_to_print = "exec time: {time:.2f}ms".format(time = exec_time) 
     # validation_img = cv2.GaussianBlur(validation_img, (7, 7), 0)
 
     validation_mask = val_mask_ndarray[i] * 255
     validation_mask = validation_mask.astype("uint8")
+    cv2.putText(validation_mask, text_to_print, (20,20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 255)
 
     prediction_img = pred_mask[i] * 255
     prediction_img = prediction_img.astype("uint8")
@@ -317,7 +323,7 @@ for i in range(BATCH_SIZE):
     axs[1, 1].imshow(blend)
     axs[1, 1].axis('off')
 
-    plt.waitforbuttonpress(1)
+    plt.waitforbuttonpress(0)
 
 plt.close()
 
@@ -339,6 +345,6 @@ for i in range(BATCH_SIZE):
     axs[1].imshow(prediction_mask_test, cmap='gray')
     axs[1].axis('off')
 
-    plt.waitforbuttonpress(1)
+    plt.waitforbuttonpress(0)
 
 plt.close()
